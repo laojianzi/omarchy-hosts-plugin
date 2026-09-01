@@ -1,0 +1,39 @@
+# Maintainer: Omarchy Hosts contributors
+pkgname=omarchy-hosts-helper
+pkgver=1.0.0
+pkgrel=1
+pkgdesc='Root-owned transactional /etc/hosts writer for the Omarchy Hosts plugin'
+arch=('any')
+url='https://omarchy.org/'
+license=('MIT')
+depends=('python>=3.11' 'polkit')
+source=(
+  'omarchy-hosts-helper'
+  'helper.py'
+  'engine.py'
+  'io.omarchy.hosts.policy'
+  'LICENSE'
+)
+sha256sums=(
+  '375fe36b583806af0304c1f789a471238dd9000c7fdeea7b7973b36946f0ba06'
+  '244b87d2824751aeb3be139d1f3397eb3b8ed530c1f2d089ae4942c9f1dcb6d3'
+  '3164ee138fe7611c227e20caf5beb877de1c2ae93a1a30be6f81d013122fd8d6'
+  '79a44f65b8e64b8f8f3a171890b7245a012a9d6c1321b662cdf54da3b02c76af'
+  '9bc2e776fc12d4ff5ba006a5f0ed3225920407e38f208605bca86628b2f8f5a2'
+)
+
+package() {
+  install -Dm755 "$srcdir/omarchy-hosts-helper" \
+    "$pkgdir/usr/lib/omarchy-hosts/omarchy-hosts-helper"
+  install -Dm644 "$srcdir/helper.py" \
+    "$pkgdir/usr/lib/omarchy-hosts/helper.py"
+  install -Dm644 "$srcdir/engine.py" \
+    "$pkgdir/usr/lib/omarchy-hosts/engine.py"
+  install -Dm644 "$srcdir/io.omarchy.hosts.policy" \
+    "$pkgdir/usr/share/polkit-1/actions/io.omarchy.hosts.policy"
+  install -Dm644 "$srcdir/LICENSE" \
+    "$pkgdir/usr/share/licenses/omarchy-hosts-helper/LICENSE"
+
+  install -dm755 "$pkgdir/var/lib/omarchy-hosts"
+  install -dm700 "$pkgdir/var/lib/omarchy-hosts/backups"
+}

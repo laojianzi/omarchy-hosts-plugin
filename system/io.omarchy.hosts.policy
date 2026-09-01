@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD polkit Policy Configuration 1.0//EN"
+  "http://www.freedesktop.org/software/polkit/policyconfig-1.dtd">
+<policyconfig>
+  <vendor>Omarchy Hosts</vendor>
+
+  <action id="io.omarchy.hosts.apply">
+    <description>Apply managed hosts profiles</description>
+    <message>Authentication is required to update /etc/hosts</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/omarchy-hosts/omarchy-hosts-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">apply</annotate>
+  </action>
+
+  <action id="io.omarchy.hosts.undo">
+    <description>Undo the last managed hosts transaction</description>
+    <message>Authentication is required to restore the previous /etc/hosts</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/omarchy-hosts/omarchy-hosts-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">undo</annotate>
+  </action>
+</policyconfig>

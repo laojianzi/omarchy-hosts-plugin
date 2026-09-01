@@ -21,6 +21,7 @@ PAIRS = (
 
 LINK_RE = re.compile(r"(?<!!)\[[^\]]+\]\(([^)]+)\)")
 HEADING_RE = re.compile(r"^(#{1,6})\s+", re.MULTILINE)
+FENCE_OPEN_RE = re.compile(r"^[ \t]{0,3}(?P<fence>`{3,}|~{3,})")
 
 
 def fail(message: str) -> None:
@@ -82,6 +83,42 @@ def validate_pair(english: Path, chinese: Path) -> None:
         )
 
 
+def mask_fenced_code_blocks(text: str) -> str:
+    """Replace fenced-code lines with blanks before scanning Markdown links.
+
+    Link-shaped examples inside fenced code are literal documentation, not
+    navigable Markdown links. Keeping a blank line for each masked line makes
+    future diagnostics stable without requiring a third-party Markdown parser.
+    """
+
+    output: list[str] = []
+    fence_character = ""
+    minimum_fence_length = 0
+
+    for line in text.splitlines():
+        if not fence_character:
+            match = FENCE_OPEN_RE.match(line)
+            if match:
+                marker = match.group("fence")
+                fence_character = marker[0]
+                minimum_fence_length = len(marker)
+                output.append("")
+                continue
+            output.append(line)
+            continue
+
+        closing_re = re.compile(
+            rf"^[ \t]{{0,3}}{re.escape(fence_character)}"
+            rf"{{{minimum_fence_length},}}[ \t]*$"
+        )
+        if closing_re.match(line):
+            fence_character = ""
+            minimum_fence_length = 0
+        output.append("")
+
+    return "\n".join(output)
+
+
 def normalize_link_target(raw_target: str) -> str:
     target = raw_target.strip()
     if target.startswith("<") and target.endswith(">"):
@@ -94,7 +131,8 @@ def normalize_link_target(raw_target: str) -> str:
 
 
 def validate_links(path: Path, text: str) -> None:
-    for raw_target in LINK_RE.findall(text):
+    scan_text = mask_fenced_code_blocks(text)
+    for raw_target in LINK_RE.findall(scan_text):
         target = normalize_link_target(raw_target)
         if not target:
             continue

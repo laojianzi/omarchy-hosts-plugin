@@ -17,7 +17,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Restore exact project tree
+      - name: Restore, verify, and publish exact project tree
         shell: bash
         run: |
           set -euo pipefail
@@ -26,9 +26,9 @@ jobs:
           test "$actual_sha" = "6322665017c3642c74efd54aa74c65acea46ee10daf5480b066d873f9c428f23"
           tar -xzf /tmp/project.tar.gz
           rm -rf bootstrap .github/workflows/bootstrap.yml
+          ./scripts/check.sh
           git config user.name "Jeff Li"
           git config user.email "laojianzi1994@gmail.com"
           git add -A
-          git diff --cached --check
           git commit -m "feat: publish complete Omarchy Hosts plugin"
           git push origin HEAD:main

@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Arch package builds
+packaging/arch/pkg/
+packaging/arch/src/
+packaging/arch/*.pkg.tar.*
+packaging/arch/*.pkg.tar.*.sig
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

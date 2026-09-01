@@ -1,14 +1,35 @@
+**English** | [简体中文](CHANGELOG.zh-CN.md)
+
 # Changelog
 
-本项目遵循 [Semantic Versioning](https://semver.org/)；正式发布记录会按版本维护。
+All notable changes to Omarchy Hosts are documented here.
 
-## [Unreleased]
+This project follows [Semantic Versioning](https://semver.org/). English is the canonical changelog; the Simplified Chinese file is a synchronized translation.
+
+## [1.0.0] - 2026-09-01
 
 ### Added
 
-- Omarchy 原生 bar widget 与键盘优先的 profile 管理面板；
-- IPv4、IPv6、alias、IDNA、冲突检测和确定性 managed block 渲染；
-- review-bound Apply、Polkit 管理员认证、root-only 备份和单步 Undo；
-- `renameat2(RENAME_EXCHANGE)` 提交边界、并发变更保护和补偿回滚；
-- 普通用户 CLI、Omarchy IPC、Arch helper package 与仓库检查脚本；
-- Python 单元测试、静态安全检查和 GitHub Actions CI。
+- Native Omarchy 4 bar widget and keyboard-first hosts management panel.
+- Profile creation, editing, deletion, enable/disable, and staged configuration persistence.
+- Deterministic hosts planning engine with IPv4, IPv6, aliases, IDN/IDNA normalization, validation limits, and protected-name checks.
+- Managed-block rendering that preserves every byte outside the Omarchy Hosts markers and retains LF or CRLF line endings.
+- Blocking conflict detection across enabled profiles and unmanaged `/etc/hosts` entries, plus non-blocking duplicate warnings.
+- Exact unified-diff preview before any privileged operation.
+- Minimal Polkit-authorized Apply and Undo helper installed separately from the user-writable plugin checkout.
+- Short-lived candidate validation, profile and baseline hashing, filesystem ownership/link checks, root-owned transaction locks, backups, and metadata.
+- Atomic `renameat2(RENAME_EXCHANGE)` commit path with pre-exchange and post-exchange concurrent-writer recovery tests.
+- Drift-aware single-step Undo bound to the user who performed the original Apply.
+- Repository-local CLI, diagnostics, and Omarchy shell `hosts` IPC target.
+- Arch Linux `PKGBUILD` for the privileged helper and synchronized packaged source copies.
+- Automated Python, manifest, XML, QML structure, packaging, documentation, version, and transaction/race checks.
+- Canonical English documentation with Simplified Chinese mirrors and language switching in every document.
+
+### Security
+
+- User-writable QML and Python are never executed as root.
+- The privileged helper imports only fixed, root-owned, non-writable packaged code under isolated Python execution.
+- Apply fails closed when the reviewed profile or `/etc/hosts` baseline changes before commit.
+- Undo refuses to overwrite external changes made after the last successful Apply.
+
+[1.0.0]: https://github.com/laojianzi/omarchy-hosts-plugin/releases/tag/v1.0.0

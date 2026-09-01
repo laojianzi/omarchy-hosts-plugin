@@ -176,10 +176,11 @@ UI review 后，Apply 不是简单地“应用当前配置”。它携带：
 2. 复制原文件 mode、uid、gid 与可读取 xattrs；
 3. 写完整数据并 `fsync(temp_fd)`；
 4. 再次读取目标，比较 inode 与预期 SHA-256；
-5. 同目录 `rename`；
-6. `fsync(/etc)`。
+5. 使用 Linux `renameat2(RENAME_EXCHANGE)` 原子交换目标与临时 inode；
+6. 验证被交换出的旧版本仍等于预期基线，并确认目标仍指向已准备的新 inode；
+7. 删除被交换出的旧版本并 `fsync(/etc)`。
 
-同目录 rename 避免跨文件系统非原子替换。
+原子交换同时保留两个版本，使 helper 能在提交边界检测并发写入；系统不支持 `RENAME_EXCHANGE` 时 fail closed，不退化为存在竞态窗口的普通替换。
 
 ## 失败原子性
 

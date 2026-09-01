@@ -1,0 +1,3 @@
+#!/bin/sh
+# Root-owned, fixed interpreter wrapper selected by the polkit action.
+exec /usr/bin/python -I -B /usr/lib/omarchy-hosts/helper.py "$@"

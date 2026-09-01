@@ -1,0 +1,19 @@
+#!/usr/bin/python
+"""Repository-local entry point for the Omarchy Hosts CLI."""
+
+from __future__ import annotations
+
+from pathlib import Path
+import sys
+
+sys.dont_write_bytecode = True
+PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+SOURCE_ROOT = PLUGIN_ROOT / "src"
+if not SOURCE_ROOT.is_dir():
+    raise SystemExit(f"omarchy-hosts: source directory not found: {SOURCE_ROOT}")
+sys.path.insert(0, str(SOURCE_ROOT))
+
+from omarchy_hosts.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    raise SystemExit(main())

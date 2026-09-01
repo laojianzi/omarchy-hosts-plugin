@@ -1,211 +1,300 @@
-# 架构说明
+**English** | [简体中文](ARCHITECTURE.zh-CN.md)
 
-## 目标
+# Architecture
 
-Omarchy Hosts 的核心目标不是“用图形界面覆盖 `/etc/hosts`”，而是建立一个可审阅、可证明、权限最小化的提交链路：
+This document is the canonical architecture description for Omarchy Hosts. The Simplified Chinese document is a synchronized translation.
+
+Omarchy Hosts is a native Omarchy 4 shell plugin that manages a narrowly delimited block inside `/etc/hosts`. The design separates user interaction and planning from the privileged system-file transaction.
+
+## 1. Goals and invariants
+
+The architecture is organized around five invariants:
+
+1. The Omarchy plugin checkout is user-writable and must never become part of the root trust base.
+2. A user can stage and review changes without acquiring administrator privileges.
+3. The exact reviewed profile state and `/etc/hosts` baseline are cryptographically bound to Apply.
+4. Bytes outside the managed block are preserved and concurrent external writers are not silently overwritten.
+5. A successful Apply is either fully recorded with a recoverable backup or compensated before reporting failure.
+
+These invariants take priority over convenience features.
+
+## 2. Component map
 
 ```text
-Omarchy Panel
-    │
-    │ JSON / stdin / Process
-    ▼
-Unprivileged CLI + StateStore
-    │
-    │ preview hashes + 0600 candidate
-    ▼
-pkexec + Polkit action
-    │
-    ▼
-Root-owned helper + identical pure engine
-    │
-    ├── lock
-    ├── revalidate
-    ├── backup
-    ├── atomic rename
-    └── durable transaction metadata
+┌─────────────────────────────────────────────────────────────┐
+│ Omarchy shell (desktop user)                                │
+│                                                             │
+│  Panel.qml ───────────────┐                                 │
+│  - bar widget             │                                 │
+│  - keyboard panel         │                                 │
+│  - profile forms          │                                 │
+│  - diff review            │                                 │
+│                           ▼                                 │
+│  Service.qml ── Process argument arrays / stdin ─────────┐  │
+└──────────────────────────────────────────────────────────│──┘
+                                                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│ User Python backend                                         │
+│                                                             │
+│  cli.py        command protocol, preview, candidate creation│
+│  store.py      secure user-state persistence                │
+│  engine.py     normalization, conflicts, render, diff       │
+└─────────────────────────────┬───────────────────────────────┘
+                              │ pkexec + fixed action
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│ Polkit authorization                                        │
+│  io.omarchy.hosts.apply / io.omarchy.hosts.undo             │
+└─────────────────────────────┬───────────────────────────────┘
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│ Packaged privileged helper                                  │
+│                                                             │
+│  fixed wrapper → isolated Python → root-owned helper.py     │
+│  root-owned packaged engine.py                              │
+│  transaction lock, backup, metadata, atomic exchange        │
+└─────────────────────────────┬───────────────────────────────┘
+                              ▼
+                       /etc/hosts
 ```
 
-## 组件
+## 3. Omarchy plugin layer
+
+### `manifest.json`
+
+The manifest declares `io.omarchy.hosts` as a single-instance `bar-widget`, with `Panel.qml` as its entry point and Network as its category. Omarchy discovers the repository as a regular third-party plugin.
 
 ### `Panel.qml`
 
-职责：
+The panel owns presentation and interaction only:
 
-- 实现 Omarchy `bar-widget` 与 `Panel` 交互；
-- 展示 profile、同步状态、阻断错误、warning 和 diff；
-- 提供键盘游标、表单、删除确认、Apply 和 Undo；
-- 注册 `hosts` IPC target；
-- 不直接读取或写入系统文件。
+- bar glyph and attention state;
+- profile list and keyboard cursor;
+- add/edit/delete forms;
+- staged enable/disable controls;
+- preview, warning, conflict, and unified-diff display;
+- Apply/Undo confirmation and status feedback;
+- Omarchy `hosts` IPC handler.
 
-面板依赖 Omarchy shell 中的 `qs.Commons` 和 `qs.Ui`，不创建第二个常驻 UI 进程。
+The UI uses Omarchy shell components, theme tokens, focus helpers, and panel sizing. Data originating outside QML is rendered as plain text where markup interpretation would be unsafe.
 
 ### `Service.qml`
 
-职责：
+The service bridges QML to the repository-local CLI. It launches processes with argument arrays rather than interpolated shell command strings. Structured profile payloads are sent through standard input. It tracks operation state, parses JSON responses, refreshes status, and exposes stable data to the panel.
 
-- 维护 panel 的长期状态；
-- 以串行方式执行普通用户 CLI；
-- 每 5 秒对账一次 state、helper 和 `/etc/hosts`；
-- 使用 Quickshell `Process` 参数数组，不通过 shell 拼接命令；
-- Profile JSON 通过 stdin 传递；
-- Apply/Undo 携带 UI 已审阅的哈希。
+The service is not privileged. It can create a candidate request, but it cannot write `/etc/hosts` directly.
 
-Service 不持有 root 权限。调用 `pkexec` 的也是普通用户 CLI，Polkit 决定是否启动 helper。
+## 4. User backend
 
-### `src/omarchy_hosts/engine.py`
+### `store.py`
 
-纯函数策略引擎，无文件写入和进程启动：
+The state store maintains profile definitions and last-apply information below the user's Omarchy configuration directory. It creates directories and files with restrictive permissions and rejects unsafe state objects such as symlinks, hard-linked files, unexpected types, and overly permissive modes.
 
-- normalization；
-- profile/entry/hostname/IP validation；
-- managed block 解析；
-- unmanaged mapping 分析；
-- conflict detection 与 same-mapping dedupe；
-- deterministic rendering；
-- exact block replacement；
-- SHA-256 与 unified diff。
+Profile identifiers are generated deterministically enough for stable references while remaining unique. Updates preserve creation metadata and use atomic user-space writes.
 
-同一文件会复制到 root-owned Arch 包中。预览端与提交端使用同一算法，但 privileged helper 从不相信预览结果，会独立重新运行算法。
+### `engine.py`
 
-### `src/omarchy_hosts/store.py`
+The planning engine is a pure, deterministic layer shared conceptually by preview and privileged apply. Its responsibilities include:
 
-用户配置存储：
+- parsing profile entry text;
+- normalizing profile structures;
+- canonicalizing IP addresses;
+- validating hostnames and aliases;
+- converting IDNs to lowercase IDNA ASCII;
+- enforcing input and rendered-output limits;
+- detecting conflicts and duplicate mappings;
+- locating and validating managed markers;
+- preserving the existing newline style;
+- rendering the desired managed block;
+- constructing the proposed full file and unified diff;
+- computing canonical configuration hashes.
 
-- Omarchy 固定配置路径 `~/.config/omarchy/hosts/`；
-- `0700` 目录、`0600` state/lock；
-- symlink、hardlink、owner、mode 检查；
-- `flock`；
-- 临时文件 + `fsync` + `os.replace`；
-- schema normalization；
-- profile CRUD。
+It does not perform privileged I/O.
 
-同 UID 的恶意进程不属于 root 权限边界，但 store 仍避免误写链接和损坏文件。
+### `cli.py`
 
-### `src/omarchy_hosts/cli.py`
+The CLI is both a human diagnostic interface and the process protocol used by QML. It loads user state, invokes the engine, reads the current `/etc/hosts`, creates a preview, and writes a short-lived candidate under the invoking user's runtime directory.
 
-连接 UI、state、预览与 Polkit：
+A candidate contains normalized source data and review bindings, not authority. The privileged helper treats it as untrusted input and recomputes all derived values.
 
-- `ui-state` 生成完整 panel model；
-- `diff` 和 `status`；
-- profile CRUD；
-- Apply 前验证 preview hash；
-- 在固定 runtime 目录 staging candidate；
-- 调用固定 `/usr/bin/pkexec` 和固定 helper 路径；
-- 解析稳定 JSON envelope；
-- 把 root transaction 摘要同步到 user state。
+## 5. Profile and rendering model
 
-CLI 本身没有任何直接写 `/etc/hosts` 的代码。
-
-### `system/helper.py`
-
-唯一 privileged 组件，命令面极小：
+A normalized profile contains:
 
 ```text
-apply ABSOLUTE_CANDIDATE_PATH
-undo [EXPECTED_AFTER_SHA256]
+id
+name
+description
+enabled
+entries[]
 ```
 
-职责：
+A normalized entry contains a canonical IP address and one or more canonical hostnames. Enabled profiles are ordered deterministically for rendering. Duplicate identical mappings are collapsed; incompatible mappings for the same hostname block the plan.
 
-- 从 `PKEXEC_UID` 识别原调用者；
-- 只接受 `/run/user/$UID/omarchy-hosts/candidates/` 的直接子文件；
-- 验证目录和候选 owner/type/link/mode/size/time；
-- 重算 profile 配置哈希；
-- 重新读取 `/etc/hosts` 并重建 plan；
-- 事务锁、备份、原子替换与状态记录；
-- Undo caller/transaction/current hash 约束；
-- syslog 审计。
+The engine owns only this block:
 
-helper 使用 `/usr/bin/python -I -B`。由于 `-I` 不包含脚本目录，helper 通过 `importlib` 加载经过 owner、link 和 mode 检查的固定 `engine.py`，不会从 `PYTHONPATH`、用户 site-packages 或当前目录导入代码。
-
-### Polkit policy
-
-两个 action：
-
-- `io.omarchy.hosts.apply`
-- `io.omarchy.hosts.undo`
-
-策略绑定固定 executable path 和 `argv1`，active session 要求管理员认证；inactive/remote subject 被拒绝；不使用认证缓存变体。
-
-## 数据模型
-
-用户 state：
-
-```json
-{
-  "schemaVersion": 1,
-  "profiles": [
-    {
-      "id": "development",
-      "name": "Development",
-      "description": "Local stack",
-      "enabled": true,
-      "entries": [
-        {"address": "127.0.0.1", "names": ["app.test", "api.app.test"]}
-      ],
-      "createdAt": "...",
-      "updatedAt": "..."
-    }
-  ],
-  "lastApply": {
-    "beforeSha256": "...",
-    "afterSha256": "...",
-    "managedSha256": "...",
-    "configSha256": "...",
-    "backup": "..."
-  }
-}
+```text
+# BEGIN OMARCHY HOSTS — managed by io.omarchy.hosts
+# profile: Example
+127.0.0.1 app.test api.app.test
+# END OMARCHY HOSTS
 ```
 
-privileged state 不复制 profiles，只保留执行 Undo 所需的事务摘要。
+The exact comment format may evolve, but the begin and end markers form the ownership boundary. All bytes before the begin marker and after the end marker are copied unchanged. If no block exists, the engine inserts one without rewriting unrelated lines. Multiple, nested, reversed, or incomplete markers are rejected.
 
-## Preview binding
+## 6. Preview and candidate lifecycle
 
-UI review 后，Apply 不是简单地“应用当前配置”。它携带：
+Preview is deliberately unprivileged:
 
-- `expectedBaseSha256`：审阅时 `/etc/hosts` 的完整哈希；
-- `expectedConfigSha256`：审阅时所有 enabled profiles 的 canonical hash。
+1. Load and normalize the staged profiles.
+2. Read `/etc/hosts` and capture its bytes and safe filesystem identity information.
+3. Produce warnings and blocking conflicts.
+4. Render the proposed content.
+5. Compute:
+   - normalized profile/configuration hash;
+   - current hosts baseline hash;
+   - proposed result hash;
+   - exact unified diff.
+6. Return the result to QML for review.
 
-普通用户 CLI 先比较一次；candidate 再携带两者；root helper 又比较一次。任一阶段不一致都要求重新审阅。
+When Apply is requested, the user backend repeats the relevant checks and creates a candidate in a private runtime directory below `/run/user/$UID`. The candidate is:
 
-## 原子写入
+- a regular file;
+- owned by the invoking UID;
+- mode `0600` or stricter;
+- limited to one hard link;
+- bounded in size;
+- short-lived;
+- named with a non-predictable component.
 
-`atomic_replace()`：
+The candidate includes the reviewed hashes and normalized source state. It is consumed through the fixed helper operation after Polkit authorization.
 
-1. 在 `/etc` 同目录创建 `O_EXCL | O_NOFOLLOW` 临时文件；
-2. 复制原文件 mode、uid、gid 与可读取 xattrs；
-3. 写完整数据并 `fsync(temp_fd)`；
-4. 再次读取目标，比较 inode 与预期 SHA-256；
-5. 使用 Linux `renameat2(RENAME_EXCHANGE)` 原子交换目标与临时 inode；
-6. 验证被交换出的旧版本仍等于预期基线，并确认目标仍指向已准备的新 inode；
-7. 删除被交换出的旧版本并 `fsync(/etc)`。
+## 7. Polkit boundary
 
-原子交换同时保留两个版本，使 helper 能在提交边界检测并发写入；系统不支持 `RENAME_EXCHANGE` 时 fail closed，不退化为存在竞态窗口的普通替换。
+The policy exposes separate Apply and Undo actions. The intended policy is:
 
-## 失败原子性
+- inactive session: deny;
+- non-local or remote session: deny;
+- active local session: require administrator authentication;
+- no broad passwordless rule;
+- no user-selected executable;
+- no arbitrary helper arguments beyond the defined operation contract.
 
-系统文件与事务 metadata 无法跨两个目录形成单个文件系统事务，因此实现补偿事务：
+`pkexec` supplies the original caller identity. The helper uses it to validate candidate ownership and to bind Undo to the user who created the transaction.
 
-- 先写 `/etc/hosts`；
-- 再写 privileged state；
-- state 写失败时，在持有全局锁的情况下检查目标哈希并把旧内容原子恢复；
-- 回滚也失败时返回包含 recovery backup 名称的高优先级错误，不伪装成功。
+## 8. Privileged helper
 
-Undo 使用同样的补偿方式。
+The helper is installed by the Arch package into fixed root-owned locations. The executable wrapper selects a fixed Python interpreter and starts Python in isolated mode with bytecode generation disabled. Before importing the packaged engine, the helper verifies that the code path and files are root-owned and not writable by group or other.
 
-## 确定性与保留策略
+The helper never imports from:
 
-managed block 不包含时间戳或随机字段，因此同一配置和同一 unmanaged 内容始终得到相同目标字节和 SHA-256。
+- the user's plugin checkout;
+- the current working directory;
+- `PYTHONPATH`;
+- a candidate-selected path.
 
-首次插入 managed block 时，原 `/etc/hosts` 整体作为前缀保留；替换时，只移除 marker 两端之间的 block bytes，`before` 与 `after` 原样拼接。
+### Apply transaction
 
-## 并发模型
+The privileged Apply flow is:
 
-- QML Service：单进程串行队列；
-- user state：advisory `flock`；
-- privileged target：全局 root lock；
-- preview → CLI：base/config hash；
-- candidate → helper：base/config hash + time window；
-- helper write window：target inode + hash recheck。
+1. Verify effective UID and caller UID context.
+2. Open and validate the candidate without following unsafe links.
+3. Check owner, mode, link count, type, age, size, and allowed directory ancestry.
+4. Parse normalized source state.
+5. Recompute the canonical profile/configuration hash.
+6. Acquire the global Omarchy Hosts transaction lock.
+7. Open and validate `/etc/hosts` as the expected root-owned regular file.
+8. Recheck the reviewed baseline hash and filesystem identity.
+9. Re-run the planning engine and compare the proposed result hash.
+10. Create and fsync a root-owned backup.
+11. Create a same-directory temporary replacement with appropriate mode/ownership.
+12. Atomically exchange it with `/etc/hosts` using `renameat2(RENAME_EXCHANGE)`.
+13. Detect whether a concurrent writer changed the target immediately before or after the exchange.
+14. Restore the concurrent version or preserve a recovery file when required; never silently overwrite the newer writer.
+15. Fsync the directory.
+16. Persist root-owned transaction metadata containing before/after hashes, backup reference, caller UID, and timestamps.
+17. If metadata persistence fails, compensate by restoring the prior version before returning an error.
+18. Remove the consumed candidate when safe.
 
-这些层分别覆盖 UI 重入、多个 CLI 实例、多个桌面用户，以及非协作的系统文件修改器。
+The transaction reports success only after the system file and recovery metadata are coherent.
+
+### Undo transaction
+
+Undo is not an unconditional restore:
+
+1. Acquire the same transaction lock.
+2. Load and validate the last transaction metadata and backup name.
+3. Confirm the current caller matches the original Apply caller.
+4. Confirm current `/etc/hosts` still matches the recorded after-hash.
+5. Validate the backup as a safe root-owned regular file.
+6. Restore it through the same atomic replacement discipline.
+7. Record or clear transaction state consistently.
+
+External changes after Apply therefore cause Undo to fail instead of being overwritten.
+
+## 9. Concurrency and recovery
+
+A process lock serializes Omarchy Hosts transactions, but it cannot force unrelated tools to use that lock. The helper therefore combines:
+
+- baseline hashing;
+- inode/type/link validation;
+- same-directory temporary files;
+- atomic exchange;
+- post-exchange verification;
+- explicit recovery preservation.
+
+Two race classes are tested:
+
+- **Pre-exchange race:** another writer changes the target after baseline validation but before exchange. The helper detects the mismatch and restores the concurrent version.
+- **Post-exchange race:** another writer replaces the target immediately after exchange. The helper does not overwrite that newer version and retains the recoverable file for administrator inspection.
+
+This is compare-and-swap behavior at the filesystem boundary, not merely an atomic rename.
+
+## 10. Packaging
+
+`packaging/arch/PKGBUILD` installs only the privileged unit:
+
+- fixed helper wrapper;
+- privileged helper implementation;
+- packaged planning engine;
+- Polkit policy;
+- license.
+
+The copies in `packaging/arch/` are synchronized from canonical source files by `scripts/sync-packaging.sh`. The check suite verifies byte equality and the PKGBUILD SHA-256 values. The regular Omarchy plugin remains a Git checkout in the user's configuration directory.
+
+## 11. Validation and CI
+
+`scripts/check.sh` is the main repository gate. It performs available checks for:
+
+- Python syntax and imports;
+- manifest schema and entry points;
+- Polkit XML;
+- QML structural/security invariants;
+- packaged source synchronization and hashes;
+- documentation pairs, language switches, canonical references, and local links;
+- version consistency;
+- unit and race tests;
+- native Omarchy validation and `makepkg` verification when available.
+
+GitHub Actions runs the portable subset on every push and pull request.
+
+## 12. Data ownership summary
+
+| Data | Owner | Trust level |
+| --- | --- | --- |
+| Plugin checkout | desktop user | untrusted by root helper |
+| Profiles/state | desktop user | untrusted input |
+| Runtime candidate | desktop user, private mode | untrusted transport |
+| Packaged helper/engine/policy | root/package manager | privileged trust base |
+| `/etc/hosts` | root | protected system state |
+| Backups/transaction metadata | root | protected recovery state |
+
+The privileged trust base is intentionally limited to the packaged helper, packaged engine, policy, Python runtime, kernel/filesystem primitives, and root-owned state.
+
+## 13. Related documents
+
+- [README](../README.md)
+- [Threat model](THREAT-MODEL.md)
+- [Security policy](../SECURITY.md)
+- [Contributing](../CONTRIBUTING.md)
+- [Changelog](../CHANGELOG.md)

@@ -1,0 +1,132 @@
+name: Prepare marketplace submission
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/prepare-marketplace-submission.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Add bilingual removal instructions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          documents = (
+              (
+                  Path("README.md"),
+                  '''Run the diagnostic after installation:
+
+          ```bash
+          "$HOME/.config/omarchy/plugins/io.omarchy.hosts/bin/omarchy-hosts" doctor
+          ```''',
+                  '''## Remove
+
+          To return `/etc/hosts` to an unmanaged state, remove the managed block while the privileged helper is still installed:
+
+          1. Disable every profile in the panel.
+          2. Review the resulting diff and select **Apply**. This removes the Omarchy Hosts managed block without changing unrelated entries.
+          3. Remove the privileged helper package:
+
+             ```bash
+             sudo pacman -Rns omarchy-hosts-helper
+             ```
+
+          4. Remove the user plugin:
+
+             ```bash
+             omarchy plugin remove io.omarchy.hosts
+             ```
+
+          User profile state under `~/.config/omarchy/hosts` and root-owned transaction data under `/var/lib/omarchy-hosts` are preserved by default. After reviewing those paths, remove them explicitly only when their history is no longer needed:
+
+          ```bash
+          rm -rf -- "$HOME/.config/omarchy/hosts"
+          sudo rm -rf --one-file-system -- /var/lib/omarchy-hosts
+          ```
+
+          If the plugin was installed with `scripts/install-local.sh` instead of `omarchy plugin add`, run `scripts/uninstall-local.sh [--purge-state]` from the source checkout. That script does not remove the privileged package or root-owned backups.''',
+              ),
+              (
+                  Path("README.zh-CN.md"),
+                  '''安装后执行诊断：
+
+          ```bash
+          "$HOME/.config/omarchy/plugins/io.omarchy.hosts/bin/omarchy-hosts" doctor
+          ```''',
+                  '''## 移除
+
+          如需让 `/etc/hosts` 恢复为不含 managed block 的状态，应在特权 helper 仍然可用时先移除该 block：
+
+          1. 在面板中停用所有 profile；
+          2. 审阅生成的 diff 并选择 **Apply**。该操作只移除 Omarchy Hosts managed block，不改动无关条目；
+          3. 移除特权 helper 包：
+
+             ```bash
+             sudo pacman -Rns omarchy-hosts-helper
+             ```
+
+          4. 移除用户插件：
+
+             ```bash
+             omarchy plugin remove io.omarchy.hosts
+             ```
+
+          `~/.config/omarchy/hosts` 下的用户 profile 状态和 `/var/lib/omarchy-hosts` 下的 root-owned 事务数据默认会被保留。审阅这些路径后，仅在确认不再需要历史记录时显式删除：
+
+          ```bash
+          rm -rf -- "$HOME/.config/omarchy/hosts"
+          sudo rm -rf --one-file-system -- /var/lib/omarchy-hosts
+          ```
+
+          如果插件是通过 `scripts/install-local.sh` 而不是 `omarchy plugin add` 安装的，请在源码 checkout 中运行 `scripts/uninstall-local.sh [--purge-state]`。该脚本不会移除特权包或 root-owned 备份。''',
+              ),
+          )
+
+          for path, marker, section in documents:
+              text = path.read_text(encoding="utf-8")
+              if section.splitlines()[0] in text:
+                  continue
+              if marker not in text:
+                  raise SystemExit(f"insertion marker not found in {path}")
+              path.write_text(text.replace(marker, marker + "\n\n" + section, 1), encoding="utf-8")
+          PY
+
+      - name: Validate repository
+        run: |
+          python scripts/check-docs.py
+          python scripts/check-version.py
+          ./scripts/check.sh
+
+      - name: Commit documentation update
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Jeff Li"
+          git config user.email "laojianzi1994@gmail.com"
+          git add README.md README.zh-CN.md
+          if git diff --cached --quiet; then
+            echo "Removal instructions already present"
+            exit 0
+          fi
+          git commit -m "docs: document safe plugin removal"
+          git push origin HEAD:main

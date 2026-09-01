@@ -105,6 +105,33 @@ Run the diagnostic after installation:
 "$HOME/.config/omarchy/plugins/io.omarchy.hosts/bin/omarchy-hosts" doctor
 ```
 
+## Remove
+
+To return `/etc/hosts` to an unmanaged state, remove the managed block while the privileged helper is still installed:
+
+1. Disable every profile in the panel.
+2. Review the resulting diff and select **Apply**. This removes the Omarchy Hosts managed block without changing unrelated entries.
+3. Remove the privileged helper package:
+
+   ```bash
+   sudo pacman -Rns omarchy-hosts-helper
+   ```
+
+4. Remove the user plugin:
+
+   ```bash
+   omarchy plugin remove io.omarchy.hosts
+   ```
+
+User profile state under `~/.config/omarchy/hosts` and root-owned transaction data under `/var/lib/omarchy-hosts` are preserved by default. After reviewing those paths, remove them explicitly only when their history is no longer needed:
+
+```bash
+rm -rf -- "$HOME/.config/omarchy/hosts"
+sudo rm -rf --one-file-system -- /var/lib/omarchy-hosts
+```
+
+If the plugin was installed with `scripts/install-local.sh` instead of `omarchy plugin add`, run `scripts/uninstall-local.sh [--purge-state]` from the source checkout. That script does not remove the privileged package or root-owned backups.
+
 ## Basic workflow
 
 1. Open the Hosts widget from the Omarchy bar.

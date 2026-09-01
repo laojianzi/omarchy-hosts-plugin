@@ -105,6 +105,33 @@ makepkg -si
 "$HOME/.config/omarchy/plugins/io.omarchy.hosts/bin/omarchy-hosts" doctor
 ```
 
+## 移除
+
+如需让 `/etc/hosts` 恢复为不含 managed block 的状态，应在特权 helper 仍然可用时先移除该 block：
+
+1. 在面板中停用所有 profile；
+2. 审阅生成的 diff 并选择 **Apply**。该操作只移除 Omarchy Hosts managed block，不改动无关条目；
+3. 移除特权 helper 包：
+
+   ```bash
+   sudo pacman -Rns omarchy-hosts-helper
+   ```
+
+4. 移除用户插件：
+
+   ```bash
+   omarchy plugin remove io.omarchy.hosts
+   ```
+
+`~/.config/omarchy/hosts` 下的用户 profile 状态和 `/var/lib/omarchy-hosts` 下的 root-owned 事务数据默认会被保留。审阅这些路径后，仅在确认不再需要历史记录时显式删除：
+
+```bash
+rm -rf -- "$HOME/.config/omarchy/hosts"
+sudo rm -rf --one-file-system -- /var/lib/omarchy-hosts
+```
+
+如果插件是通过 `scripts/install-local.sh` 而不是 `omarchy plugin add` 安装的，请在源码 checkout 中运行 `scripts/uninstall-local.sh [--purge-state]`。该脚本不会移除特权包或 root-owned 备份。
+
 ## 基本使用流程
 
 1. 从 Omarchy 顶栏打开 Hosts 组件。

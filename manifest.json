@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "io.omarchy.hosts",
+  "name": "Omarchy Hosts",
+  "version": "1.0.0",
+  "author": "Omarchy Hosts contributors",
+  "license": "MIT",
+  "description": "Native, keyboard-first hosts profile management with reviewed diffs, atomic writes, conflict detection, backups, and Polkit authorization.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Hosts",
+    "description": "Manage and apply /etc/hosts profiles safely.",
+    "category": "Network",
+    "defaultSection": "right",
+    "allowMultiple": false,
+    "defaults": {},
+    "schema": []
+  }
+}

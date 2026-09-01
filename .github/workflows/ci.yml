@@ -2,7 +2,6 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
 
 permissions:
@@ -12,9 +11,19 @@ jobs:
   checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: "3.12"
+
+      - name: Validate bilingual documentation
+        run: python scripts/check-docs.py
+
+      - name: Validate version consistency
+        run: python scripts/check-version.py
+
       - name: Run repository checks
         run: ./scripts/check.sh

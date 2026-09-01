@@ -1,118 +1,333 @@
-# 威胁模型
+**English** | [简体中文](THREAT-MODEL.zh-CN.md)
 
-## 受保护资产
+# Threat Model
 
-- `/etc/hosts` 中 managed block 外的系统和用户内容；
-- `/etc/hosts` 的完整性、owner、mode 与扩展属性；
-- root helper 的执行路径与导入路径；
-- root-only 历史备份；
-- 用户 profile 配置的私密性；
-- Undo 不覆盖后续合法更改的保证。
+This is the canonical threat model for Omarchy Hosts. The Simplified Chinese document is a synchronized translation.
 
-## 信任边界
+## 1. Scope
 
-### 不可信或低信任
+Omarchy Hosts lets a logged-in Omarchy user stage named hosts profiles and, after explicit Polkit authentication, update a managed block inside `/etc/hosts`. The scope includes:
 
-- 第三方插件 QML 与普通用户 Python 后端；
-- IPC 调用参数；
-- 用户 state 内容；
-- candidate 路径和 JSON；
-- 环境变量、`PATH`、`PYTHONPATH`、当前目录；
-- `/etc/hosts` 从 preview 到 commit 之间的状态；
-- 同一用户会话中的其他普通进程。
+- the QML plugin and Omarchy shell IPC surface;
+- repository-local user Python code and profile state;
+- preview generation and runtime candidates;
+- Polkit action policy and `pkexec` transition;
+- the packaged privileged helper and packaged planning engine;
+- `/etc/hosts`, root-owned backups, locks, and transaction metadata;
+- Apply and Undo behavior under concurrent writers and filesystem failures;
+- the Arch package boundary.
 
-### 可信
+DNS servers, application-specific DNS caching, remote name services, the security of Omarchy itself, and arbitrary root administration are outside the direct scope except where they interact with a documented project boundary.
 
-- 经过用户审阅并由包管理器安装的 root-owned wrapper/helper/engine/policy；
-- Linux 文件权限、Polkit、rename 与 advisory lock 语义；
-- root 管理员本身。
+## 2. Security objectives
 
-root 已被攻陷不在本项目可防护范围内。
+The system aims to guarantee:
 
-## 主要威胁与控制
+1. **Integrity of unmanaged hosts data.** Content outside the managed markers is not intentionally rewritten or silently replaced.
+2. **Review integrity.** The state applied with privilege is the state represented by the reviewed diff.
+3. **Privilege containment.** User-writable plugin code cannot cause the root helper to import or execute arbitrary user code or commands.
+4. **Authorization.** Apply and Undo require the intended local active-session Polkit decision.
+5. **Conflict safety.** Ambiguous markers and incompatible hostname mappings fail closed.
+6. **Concurrency safety.** External writers are detected and their newer version is not silently overwritten.
+7. **Recovery.** A reported successful Apply has a validated backup and coherent transaction metadata; a failed metadata phase is compensated.
+8. **Undo safety.** Undo restores only the transaction it is authorized for and never overwrites later drift.
+9. **Availability bounds.** Input, file, diff, and journal processing are bounded to avoid uncontrolled resource use.
 
-### 可写插件脚本获得 root
+## 3. Assets
 
-**威胁：** Polkit 直接执行 `~/.config/...` 下的 helper，普通用户随后替换脚本实现提权。
+Protected assets include:
 
-**控制：** Polkit 只允许 `/usr/lib/omarchy-hosts/omarchy-hosts-helper`；wrapper/helper/engine 由 pacman 安装、root-owned、不可被 group/other 写。用户插件从不作为 root 执行。
+- the current and prior valid contents of `/etc/hosts`;
+- mappings outside the Omarchy Hosts managed block;
+- the meaning of the user's reviewed diff;
+- root execution control flow and imported code;
+- Polkit authorization intent;
+- root-owned backups and transaction metadata;
+- the identity of the user who performed Apply;
+- the confidentiality of unrelated local configuration and logs;
+- desktop shell availability.
 
-### PATH/PYTHONPATH/import 劫持
+Profile confidentiality is useful but not a primary secrecy boundary: profiles are owned by the logged-in user and any process already running as that user can generally read user configuration.
 
-**威胁：** `pkexec` 环境或当前目录让 helper 导入用户控制的 `engine`。
+## 4. Actors and capabilities
 
-**控制：** 固定 `/usr/bin/python -I -B`；按验证后的绝对文件路径加载 engine；检查 regular file、owner、link count 和 write bits；不调用 shell，不查找 PATH。
+### Normal desktop user
 
-### 任意文件写入
+Can edit their own profiles, plugin checkout, environment, working directory, runtime files, and QML configuration. Can request Polkit authentication but cannot directly write root-owned protected files.
 
-**威胁：** candidate 指定另一个目标或 backup 路径，实现 root 任意文件覆盖。
+### Compromised desktop-user process
 
-**控制：** helper 中目标常量固定为 `/etc/hosts`；candidate 不包含目标路径；backup 名称由 helper 生成，Undo 使用严格正则；candidate 只接受固定 runtime 目录的直接子文件。
+Has the same access as the logged-in user and may race candidate creation, replace user-owned files, control environment variables, send shell IPC calls, or display misleading UI outside this plugin. It cannot assume administrator authentication or write root-owned package/system state directly.
 
-### Symlink/hardlink 攻击
+### Local administrator/root
 
-**威胁：** 将 state、candidate、lock、target 或 backup 替换成链接。
+Can modify all system and package state. Protection against a malicious root administrator is not a project objective.
 
-**控制：** `lstat`、`O_NOFOLLOW`、regular-file 检查、owner 检查、`st_nlink == 1`、open 前后 inode 比较。Privileged 目录本身也检查 owner/type/mode。
+### Concurrent legitimate writer
 
-### Preview/Apply TOCTOU
+A package, configuration manager, editor, VPN client, container tool, or administrator may update `/etc/hosts` without using the Omarchy Hosts lock.
 
-**威胁：** 用户审阅后，另一个进程改变 profiles 或 `/etc/hosts`，Apply 提交未审阅内容。
+### Remote attacker
 
-**控制：** UI → CLI 携带 base/config SHA-256；CLI 重算；candidate 再携带；helper 重算并比较；写入前再次比较 target hash，rename 前再检查 target inode+hash。
+May influence data copied by the user, remote services, or web content, but has no direct local execution unless another compromise exists. The plugin itself does not require network access for Apply/Undo.
 
-### Candidate 篡改或重放
+## 5. Trust boundaries
 
-**威胁：** candidate 在授权前被修改，或旧 candidate 被重复提交。
+```text
+Untrusted/user-controlled
+  QML plugin checkout
+  profile files and IPC requests
+  environment and current directory
+  runtime candidate
+                │
+                │ explicit Polkit action + fixed executable
+                ▼
+Privileged trust base
+  root-owned wrapper/helper/engine/policy
+  Python runtime
+  kernel and filesystem primitives
+  root-owned transaction state
+                │
+                ▼
+Protected target
+  /etc/hosts
+```
 
-**控制：** candidate `0600`、caller-owned、单链接、固定目录；helper 重算配置哈希；`requestUid` 必须匹配 `PKEXEC_UID`；15 分钟有效期；base hash 使成功 Apply 后的重放失效。
+Crossing the Polkit boundary does not make the candidate trusted. The helper independently validates every security-relevant property.
 
-### Hostname 冲突造成错误路由
+## 6. Attack surfaces and controls
 
-**威胁：** 多个 profile 或 unmanaged 行把名称指向不同地址。
+### 6.1 Malicious profile content
 
-**控制：** root/helper 和 preview 都执行同一冲突检测；异址冲突阻断，同址重复去重并提示。
+**Threats**
 
-### 覆盖外部更新
+- command injection through hostname, label, error, or option fields;
+- newline/comment injection that escapes the managed representation;
+- pathological input causing excessive CPU, memory, or diff size;
+- wildcard or malformed hostnames changing resolution semantics;
+- IDN ambiguity;
+- conflicting mappings hidden across profiles.
 
-**威胁：** DHCP、配置管理、管理员或其他 hosts 工具在 preview/Apply/Undo 期间修改文件。
+**Controls**
 
-**控制：** 完整文件哈希、managed block 哈希、事务锁、write-window inode/hash 检查；Undo 要求当前内容仍等于 Apply 后 hash。
+- structured parsing, no command construction from profile values;
+- canonical IP parsing and hostname normalization;
+- IDNA conversion and lowercase canonical form;
+- rejection of unsupported wildcard/scoped/controlled names;
+- bounded profiles, entries, aliases, field lengths, and rendered output;
+- deterministic rendering;
+- explicit conflict and duplicate analysis;
+- plain-text UI rendering for untrusted output.
 
-### 备份泄漏
+### 6.2 Candidate substitution and filesystem attacks
 
-**威胁：** hosts 中包含内网名称，普通用户读取历史备份。
+**Threats**
 
-**控制：** backup directory `0700`，backup files `0600`，均 root-owned。Unprivileged state 仅包含哈希和 backup basename，不含备份内容。
+- replacing a candidate after preview;
+- symlink or hard-link attacks;
+- path traversal outside the runtime directory;
+- candidate reuse after a long delay;
+- changing file ownership or permissions;
+- supplying a device, FIFO, directory, or other special file.
 
-### 部分提交
+**Controls**
 
-**威胁：** 写入中断、磁盘满、metadata 写失败造成截断或无法 Undo。
+- candidate constrained to the caller's expected `/run/user/$UID` subtree;
+- non-predictable name and restrictive parent directories;
+- regular-file, owner, mode, size, age, and single-link validation;
+- no unsafe link following;
+- canonical profile hash recomputed by the helper;
+- short validity window and one-operation consumption;
+- helper re-renders from normalized source rather than trusting proposed bytes.
 
-**控制：** 同目录临时文件、完整写循环、file/dir fsync、原子 rename；metadata 失败执行补偿回滚；回滚失败返回 recovery backup 细节并记录错误，而不是返回成功。
+### 6.3 Python import and executable substitution
 
-### Polkit 授权过宽
+**Threats**
 
-**威胁：** 任意参数或远程/inactive session 利用授权执行未预期动作。
+- `PYTHONPATH`, current-directory, or plugin-checkout import injection;
+- replacing the interpreter or helper path through environment variables;
+- editing helper source in the user-owned plugin checkout and persuading root to execute it;
+- bytecode cache substitution.
 
-**控制：** action 绑定 executable path 与第一参数 `apply`/`undo`；helper 自身检查完整 argc；`allow_any=no`、`allow_inactive=no`、active 要求 `auth_admin`；不使用 `*_keep`。
+**Controls**
 
-## 有意不解决的问题
+- fixed root-owned executable wrapper and interpreter path;
+- isolated Python mode and disabled bytecode writes;
+- root ownership and non-writability checks for packaged code and directories;
+- imports only from the packaged engine path;
+- no privileged execution of repository-local install hooks or plugin scripts;
+- package checksums and source synchronization checks.
 
-- 对抗已获得 root 的攻击者；
-- 对抗同一用户读取其自己的普通 user state；
-- 为 `/etc/hosts` 提供通配、按进程路由或 DNS server 功能；
-- 同步多台机器；
-- 替代企业配置管理系统；
-- 修复第三方应用自身的 DNS 缓存行为。
+### 6.4 Polkit misuse
 
-## 安全不变量
+**Threats**
 
-1. 普通用户可修改的文件永远不作为 root Python 程序入口或导入模块。
-2. Helper 永远只写固定 `/etc/hosts`。
-3. 没有成功 Polkit 授权，不发生 privileged 写入。
-4. 没有通过 root 侧重新验证，不发生 privileged 写入。
-5. target 与审阅基线不同，不发生写入。
-6. managed block 外内容由 plan 原样保留。
-7. Undo 不覆盖 Apply 之后的外部修改。
-8. 返回“成功”意味着 target 与 root transaction metadata 都已持久提交。
+- authorization from an inactive or remote session;
+- broad passwordless rules;
+- action confusion between Apply and Undo;
+- arbitrary executable or argument execution through `pkexec`;
+- reuse of authorization beyond the intended operation.
+
+**Controls**
+
+- separate fixed action IDs for Apply and Undo;
+- active local administrator authentication policy;
+- fixed helper executable and defined operation argument;
+- no generic root command interface;
+- helper verifies its operation, effective UID, caller UID, and candidate/transaction ownership.
+
+Local administrators can replace Polkit rules; malicious-root resistance is out of scope.
+
+### 6.5 Managed-marker attacks
+
+**Threats**
+
+- duplicate, nested, reordered, or partial markers;
+- crafted comments resembling markers;
+- expanding ownership beyond the intended block;
+- line-ending transformations that rewrite the file.
+
+**Controls**
+
+- exact marker matching;
+- exactly zero or one well-ordered block;
+- malformed layouts fail closed;
+- deterministic first insertion;
+- byte preservation outside the block;
+- existing LF/CRLF style retained.
+
+### 6.6 Stale review / TOCTOU
+
+**Threats**
+
+- profile state changes after the user reviews the diff;
+- `/etc/hosts` changes before administrator authentication completes;
+- the candidate contains a result that does not match its source profiles;
+- filesystem identity changes between validation and commit.
+
+**Controls**
+
+- canonical profile/configuration hash in the review binding;
+- `/etc/hosts` baseline hash and identity binding;
+- user backend preflight before invoking Polkit;
+- helper recomputation after privilege escalation;
+- transaction lock and second baseline check immediately before commit;
+- proposed-result hash comparison.
+
+### 6.7 Concurrent external writers
+
+**Threats**
+
+- another process writes after baseline validation but before replacement;
+- another process writes immediately after replacement;
+- a simple rename succeeds atomically but still overwrites a newer semantic version;
+- cleanup deletes the only surviving concurrent version.
+
+**Controls**
+
+- same-directory temporary file;
+- `renameat2(RENAME_EXCHANGE)` rather than an unchecked replace;
+- pre- and post-exchange hash/identity verification;
+- rollback to the concurrent version when detected before finalization;
+- recovery-file preservation when a newer post-exchange target must remain in place;
+- dedicated automated tests for both race classes;
+- directory fsync.
+
+### 6.8 Backup, metadata, and Undo attacks
+
+**Threats**
+
+- backup path traversal or symlink substitution;
+- incomplete success where `/etc/hosts` changed but metadata did not persist;
+- a different user invoking Undo;
+- Undo overwriting legitimate changes made after Apply;
+- stale transaction metadata restoring an unrelated backup.
+
+**Controls**
+
+- root-only backup and metadata directories;
+- constrained generated backup names;
+- regular-file and ownership checks;
+- before/after hashes and caller UID in transaction metadata;
+- compensation rollback when metadata persistence fails;
+- Undo caller binding;
+- current after-hash verification before restore;
+- serialized Apply/Undo lock.
+
+### 6.9 QML and shell availability
+
+**Threats**
+
+- malformed JSON or process output crashing the shell;
+- repeated polling or oversized output degrading the desktop;
+- markup injection in error messages;
+- focus traps that prevent safe cancellation.
+
+**Controls**
+
+- bounded backend responses and defensive JSON parsing;
+- controlled polling and single in-flight operations;
+- plain-text rendering for external text;
+- native Omarchy focus and keyboard components;
+- the shell remains unprivileged, so a UI crash does not grant root access.
+
+Because Omarchy plugins are unsandboxed within the user session, a malicious plugin can still affect the user's shell. Users must review third-party plugin code before enabling it.
+
+## 7. Assumptions
+
+The design assumes:
+
+- the kernel and local filesystem correctly implement required open, fsync, locking, and `renameat2` semantics;
+- root-owned package files and Polkit policy have not already been modified by an attacker;
+- `pkexec` supplies a trustworthy original caller identity;
+- `/etc/hosts` is a local regular file rather than an intentionally unusual bind mount, symlink, or network filesystem object;
+- administrator authentication represents deliberate approval of the displayed operation;
+- the Python standard library and interpreter are trusted components of the operating system;
+- the user reviews plugin and helper changes before installation.
+
+When these assumptions are false, the helper should fail closed where it can detect the condition.
+
+## 8. Residual risks
+
+- A compromised desktop user can alter staged profiles and attempt to socially engineer an administrator into approving them.
+- A hostile root administrator can replace any control in the privileged trust base.
+- Some unusual filesystems or hardened environments may not support the atomic exchange operation, causing Apply to be unavailable rather than falling back to a weaker write.
+- A system crash at the narrowest hardware/filesystem durability boundary may still require administrator inspection, despite file and directory fsync.
+- Applications may cache name-resolution results and not observe `/etc/hosts` changes immediately.
+- Other tools may implement their own managed sections with incompatible semantics; the conflict detector cannot infer every external tool's intent.
+
+These risks are documented rather than hidden behind an unsafe fallback.
+
+## 9. Security testing expectations
+
+Changes affecting parsing, candidates, filesystem operations, Polkit, helper imports, transactions, or packaging require tests for both the intended path and adversarial variants. At minimum, preserve coverage for:
+
+- malformed and oversized input;
+- symlink/hard-link and permission violations;
+- stale profile and hosts baselines;
+- candidate tampering and expiration;
+- marker corruption;
+- pre- and post-exchange races;
+- metadata-write compensation;
+- caller-bound, drift-aware Undo;
+- packaged source divergence.
+
+Run:
+
+```bash
+./scripts/check.sh
+```
+
+before submitting a security-sensitive change.
+
+## 10. Reporting
+
+Follow the private reporting instructions in [SECURITY.md](../SECURITY.md). Do not place exploit details for an unpatched issue in a public issue or pull request.
+
+## 11. Related documents
+
+- [Architecture](ARCHITECTURE.md)
+- [Security policy](../SECURITY.md)
+- [README](../README.md)
+- [Contributing](../CONTRIBUTING.md)
+- [Changelog](../CHANGELOG.md)

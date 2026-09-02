@@ -6,6 +6,25 @@ Omarchy Hosts 的重要变更都会记录在这里。
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)。英文 changelog 是规范版本；简体中文文件是同步翻译。
 
+## [1.0.1] - 2026-09-02
+
+### 安全
+
+- 用户状态的加锁、有界读取、私有临时文件创建、原子替换、权限修改、清理与目录同步均改为通过已校验且持续持有的目录描述符相对执行。
+- 每个特权 candidate 的文件名绑定其精确 JSON 字节的 SHA-256；root helper 会在不跟随符号链接的情况下重新打开完整 runtime 目录链并校验摘要。
+- root 事务状态由“先检查再重新打开”改为一次有界 no-follow 描述符读取。
+- QML 增加有界流式输出、逐操作 deadline、终止升级和组件销毁清理。
+- CLI 增加并发排空 pipe、独立进程会话、硬 deadline、输出上限和进程组清理。
+- root helper 增加独立的授权后 watchdog。
+
+### 变更
+
+- 更新 Arch helper package，并同步加固后的特权边界 helper 源码。
+- 扩展文件系统竞态、candidate 替换、不安全 root state、输出上限、超时与后代进程回归测试。
+- 记录 Marketplace 安全整改，以及从 `v1.0.0` 升级时必须重装 helper 的要求。
+
+[1.0.1]: https://github.com/laojianzi/omarchy-hosts-plugin/releases/tag/v1.0.1
+
 ## [1.0.0] - 2026-09-01
 
 ### 新增

@@ -6,7 +6,7 @@ A native, keyboard-first `/etc/hosts` profile manager for **Omarchy 4**.
 
 Omarchy Hosts is implemented as an Omarchy shell bar widget and panel rather than a separate GTK, Electron, or web application. It stages profile changes in the user session, presents the exact unified diff for review, and delegates only the final system-file transaction to a minimal Polkit-authorized helper.
 
-> Version: `1.0.0`
+> Version: `1.0.1`
 >
 > Plugin ID: `io.omarchy.hosts`
 >
@@ -24,6 +24,17 @@ Omarchy Hosts is implemented as an Omarchy shell bar widget and panel rather tha
 - Root-owned backups, drift detection, and one-step transactional Undo.
 - Compare-and-swap checks around `/etc/hosts`, including concurrent-writer protection.
 - CLI and Omarchy shell IPC surfaces for automation and diagnostics.
+
+## Security hardening in 1.0.1
+
+Version 1.0.1 closes the mutable-path and unbounded-process findings raised during the Omarchy Marketplace review:
+
+- user state reads, writes, locking, replacement, and cleanup are rooted in held no-follow directory descriptors;
+- privileged candidate bytes are bound to a SHA-256 value embedded in the filename and rechecked by the root helper;
+- root transaction state is read once through a bounded `O_NOFOLLOW` descriptor;
+- the QML service enforces output ceilings, deadlines, termination escalation, and component-destruction cleanup;
+- the CLI runs `pkexec` in a dedicated process session with independent stdout/stderr limits and process-group teardown;
+- the root helper enforces a separate post-authorization hard deadline.
 
 ## Design goals
 
@@ -98,6 +109,8 @@ makepkg -si
 ```
 
 The package installs a fixed interpreter wrapper, a root-only helper implementation, a validated copy of the planning engine, and the Polkit action policy. It does not grant passwordless writes to `/etc/hosts`.
+
+Users upgrading from `v1.0.0` must rerun `makepkg -si` from this directory before using Apply or Undo; updating the user-writable plugin checkout does not replace an already installed root-owned helper.
 
 Run the diagnostic after installation:
 
@@ -245,7 +258,7 @@ English is the canonical/default documentation language. Every canonical documen
 
 ## Release status
 
-`v1.0.0` is the first public release. It establishes the native plugin UI, validation and planning engine, hardened Apply/Undo helper, Arch package, automated tests, and bilingual documentation baseline.
+`v1.0.1` is the current security-hardening release. It retains the `v1.0.0` product baseline while closing the descriptor-relative I/O and bounded-process findings from the Omarchy Marketplace review.
 
 See the canonical [Changelog](CHANGELOG.md) for release details.
 

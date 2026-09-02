@@ -10,6 +10,11 @@ Item {
     || (home + "/.config/omarchy/plugins/io.omarchy.hosts")
   readonly property string cliPath: pluginDir + "/bin/omarchy-hosts"
   readonly property string pythonPath: "/usr/bin/python"
+  readonly property int maxStdoutChars: 8 * 1024 * 1024
+  readonly property int maxStderrChars: 128 * 1024
+  readonly property int maxErrorChars: 4096
+  readonly property int normalDeadlineMs: 30000
+  readonly property int privilegedDeadlineMs: 195000
 
   property var profiles: []
   property var status: ({ kind: "idle", label: "Loading…", canApply: false, canUndo: false, error: null })
@@ -25,6 +30,15 @@ Item {
   property string stdinPayload: ""
   property int revision: 0
   property bool refreshQueued: false
+
+  // Process-lifetime state. Output is streamed into explicitly bounded
+  // buffers so unexpected child output cannot grow without limit.
+  property string stdoutBuffer: ""
+  property string stderrBuffer: ""
+  property bool stopping: false
+  property string stopMessage: ""
+  property bool destroying: false
+  property int pendingExitCode: 0
 
   signal changed()
   signal operationSucceeded(string action, var data)
@@ -49,6 +63,60 @@ Item {
     return null
   }
 
+  function _deadlineFor(action) {
+    return action === "apply" || action === "undo"
+      ? privilegedDeadlineMs
+      : normalDeadlineMs
+  }
+
+  function _displayExcerpt(value) {
+    var text = String(value || "").trim()
+    if (text.length <= maxErrorChars) return text
+    return text.slice(0, maxErrorChars) + "\n… output truncated …"
+  }
+
+  function _signalBackend(signalNumber) {
+    if (!backend.running) return
+    try {
+      backend.signal(signalNumber)
+    } catch (e) {
+      // Older Quickshell builds still stop a Process when running is cleared.
+      backend.running = false
+    }
+  }
+
+  function _requestStop(message) {
+    if (!busy || stopping) return
+    stopping = true
+    stopMessage = String(message || "Backend operation cancelled")
+    operationTimer.stop()
+    _signalBackend(15)
+    if (!backend.running) {
+      pendingExitCode = -1
+      finishTimer.restart()
+      return
+    }
+    killTimer.restart()
+  }
+
+  function _appendOutput(stderrStream, data) {
+    if (!busy || stopping) return
+    var chunk = String(data || "")
+    if (stderrStream) {
+      if (stderrBuffer.length + chunk.length > maxStderrChars) {
+        _requestStop("Backend stderr exceeded the safety limit")
+        return
+      }
+      stderrBuffer += chunk
+    } else {
+      if (stdoutBuffer.length + chunk.length > maxStdoutChars) {
+        _requestStop("Backend response exceeded the safety limit")
+        return
+      }
+      stdoutBuffer += chunk
+    }
+  }
+
   function _run(action, args, input) {
     if (busy) {
       if (action === "refresh") refreshQueued = true
@@ -58,6 +126,15 @@ Item {
     busyAction = action
     error = ""
     stdinPayload = input ? String(input) : ""
+    stdoutBuffer = ""
+    stderrBuffer = ""
+    stopping = false
+    stopMessage = ""
+    finishTimer.stop()
+    killTimer.stop()
+    operationTimer.interval = _deadlineFor(action)
+    operationTimer.restart()
+
     var command = [pythonPath, "-I", "-B", cliPath, "--json"]
     for (var i = 0; i < args.length; i++) command.push(String(args[i]))
     backend.command = command
@@ -117,11 +194,17 @@ Item {
   }
 
   function _finish(code) {
+    if (!busy) return
+    operationTimer.stop()
+    killTimer.stop()
+
     var action = busyAction
-    var raw = String(stdoutCollector.text || "").trim()
-    var err = String(stderrCollector.text || "").trim()
+    var raw = String(stdoutBuffer || "").trim()
+    var err = String(stderrBuffer || "").trim()
+    var wasStopped = stopping
+    var stoppedMessage = stopMessage
     var envelope = null
-    if (raw !== "") {
+    if (!wasStopped && raw !== "") {
       var lines = raw.split("\n")
       for (var i = lines.length - 1; i >= 0; i--) {
         var line = lines[i].trim()
@@ -133,14 +216,18 @@ Item {
     busy = false
     busyAction = ""
     stdinPayload = ""
+    stdoutBuffer = ""
+    stderrBuffer = ""
+    stopping = false
+    stopMessage = ""
     var shouldRefresh = false
 
-    if (!envelope || envelope.ok !== true) {
-      var message = "Backend command failed"
-      if (envelope && envelope.error && envelope.error.message) message = String(envelope.error.message)
-      else if (err !== "") message = err
-      else if (raw !== "") message = raw
-      else if (code !== 0) message = "Backend exited with code " + code
+    if (wasStopped || !envelope || envelope.ok !== true) {
+      var message = wasStopped ? stoppedMessage : "Backend command failed"
+      if (!wasStopped && envelope && envelope.error && envelope.error.message) message = _displayExcerpt(envelope.error.message)
+      else if (!wasStopped && err !== "") message = _displayExcerpt(err)
+      else if (!wasStopped && raw !== "") message = _displayExcerpt(raw)
+      else if (!wasStopped && code !== 0) message = "Backend exited with code " + code
       error = message
       if (action === "refresh") _markRefreshFailure(message)
       operationFailed(action, message)
@@ -160,23 +247,73 @@ Item {
       }
     }
 
-    if (refreshQueued || shouldRefresh) {
+    if (!destroying && (refreshQueued || shouldRefresh)) {
       refreshQueued = false
       Qt.callLater(function() { if (!root.busy) root.refresh() })
     }
   }
 
   Component.onCompleted: refresh()
+  Component.onDestruction: {
+    destroying = true
+    refreshQueued = false
+    operationTimer.stop()
+    finishTimer.stop()
+    killTimer.stop()
+    if (backend.running) {
+      _signalBackend(15)
+      // Clearing running is the compatibility fallback and also asks the
+      // Process object to stop before its owning QML component disappears.
+      backend.running = false
+    }
+  }
 
   Process {
     id: backend
     command: []
     running: false
     stdinEnabled: true
-    stdout: StdioCollector { id: stdoutCollector; waitForEnd: true }
-    stderr: StdioCollector { id: stderrCollector; waitForEnd: true }
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(data) { root._appendOutput(false, data) }
+    }
+    stderr: SplitParser {
+      splitMarker: ""
+      onRead: function(data) { root._appendOutput(true, data) }
+    }
     onStarted: if (root.stdinPayload !== "") backend.write(root.stdinPayload)
-    onExited: function(code, status) { root._finish(code) }
+    onExited: function(code, status) {
+      root.pendingExitCode = code
+      // Let the stream parsers deliver any final chunk before parsing the envelope.
+      finishTimer.restart()
+    }
+  }
+
+  Timer {
+    id: finishTimer
+    interval: 50
+    repeat: false
+    onTriggered: root._finish(root.pendingExitCode)
+  }
+
+  Timer {
+    id: operationTimer
+    repeat: false
+    onTriggered: root._requestStop("Backend operation timed out")
+  }
+
+  Timer {
+    id: killTimer
+    interval: 3000
+    repeat: false
+    onTriggered: {
+      if (backend.running) {
+        root._signalBackend(9)
+        backend.running = false
+      }
+      root.pendingExitCode = -9
+      finishTimer.restart()
+    }
   }
 
   Timer {

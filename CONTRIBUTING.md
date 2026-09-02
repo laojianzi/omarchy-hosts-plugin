@@ -184,8 +184,8 @@ For a release:
 4. Create and push an annotated tag, for example:
 
    ```bash
-   git tag -a v1.0.0 -m "Omarchy Hosts v1.0.0"
-   git push origin v1.0.0
+   git tag -a vX.Y.Z -m "Omarchy Hosts vX.Y.Z"
+   git push origin vX.Y.Z
    ```
 
 5. The permanent release workflow validates the tag/version relationship and creates the GitHub Release from the canonical English changelog. Add any Chinese release summary as a link to `CHANGELOG.zh-CN.md` rather than replacing the canonical notes.

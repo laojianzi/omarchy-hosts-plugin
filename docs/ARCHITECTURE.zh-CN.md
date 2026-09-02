@@ -300,3 +300,17 @@ GitHub Actions 会在每次 push 与 pull request 上执行可移植子集。
 - [Security policy](../SECURITY.md)
 - [Contributing](../CONTRIBUTING.md)
 - [Changelog](../CHANGELOG.md)
+
+## 描述符与进程生命周期模型
+
+### 状态事务描述符
+
+`StateStore` 在不跟随符号链接的情况下获取配置 home、`omarchy` 和 `hosts` 目录的描述符。它校验受管理目录，并同时锁定已持有的状态目录 inode 与通过该目录相对打开的兼容 lock file。读取时通过目录描述符只打开一次 `state.json`，并校验大小、类型、owner、link count 和 mode。写入时创建 mode-0600 的不可预测子文件，完成同步后使用类似 `renameat` 的目录相对参数替换 `state.json`，再同步目录并释放锁。
+
+### Candidate 授权交接
+
+CLI 通过已持有的 `/run/user/$UID/omarchy-hosts/candidates` 描述符创建 candidate，并命名为 `request-<content-sha256>-<nonce>.json`。路径名只作为 Polkit 交接点。特权 helper 会独立打开并校验每个目录组件，使用 `O_NOFOLLOW` 打开 basename，执行有界读取，并在解析前将实际字节与 basename 中的摘要比较。因此，即使替换发生在授权对话框打开期间，只要请求状态不同就会失败。
+
+### 进程与输出所有权
+
+QML service 负责最外层用户可见 deadline 与输出上限：接收流式记录，在超时或溢出时终止 CLI，必要时升级强杀，并在组件销毁时清理。CLI 负责内层 `pkexec` 进程会话：并发排空两个 pipe，施加更严格的协议上限，并在超时、溢出或收到 QML 信号时终止会话。特权 helper 通过进程内 watchdog 负责授权完成后的最终 deadline。每一层都只清理自己创建的进程和资源。

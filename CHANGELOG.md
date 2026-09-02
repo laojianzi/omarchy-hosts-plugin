@@ -6,6 +6,25 @@ All notable changes to Omarchy Hosts are documented here.
 
 This project follows [Semantic Versioning](https://semver.org/). English is the canonical changelog; the Simplified Chinese file is a synchronized translation.
 
+## [1.0.1] - 2026-09-02
+
+### Security
+
+- Made user-state locking, bounded reads, private temporary creation, atomic replacement, permission changes, cleanup, and directory synchronization descriptor-relative through validated held directories.
+- Bound each privileged candidate filename to the SHA-256 of its exact JSON bytes and made the root helper reopen the complete runtime-directory chain without following symbolic links before verifying the digest.
+- Replaced the root transaction-state check-then-reopen flow with one bounded no-follow descriptor read.
+- Added bounded QML streaming, per-operation deadlines, termination escalation, and component-destruction cleanup.
+- Added a bounded CLI process runner with concurrent pipe draining, a dedicated process session, hard deadlines, output limits, and process-group teardown.
+- Added an independent post-authorization watchdog to the root helper.
+
+### Changed
+
+- Updated the Arch helper package and synchronized packaged helper source for the hardened privilege boundary.
+- Expanded filesystem race, candidate substitution, unsafe root-state, output-limit, timeout, and descendant-process regression coverage.
+- Documented the Marketplace security remediation and the required helper reinstall for upgrades from `v1.0.0`.
+
+[1.0.1]: https://github.com/laojianzi/omarchy-hosts-plugin/releases/tag/v1.0.1
+
 ## [1.0.0] - 2026-09-01
 
 ### Added

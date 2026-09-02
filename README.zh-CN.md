@@ -6,7 +6,7 @@
 
 Omarchy Hosts 不是独立的 GTK、Electron 或 Web 应用，而是直接实现为 Omarchy shell 顶栏组件与面板。插件在用户会话中暂存 profile 变更，展示精确的 unified diff 供审阅，仅在最终系统文件事务阶段调用一个经过 Polkit 授权的最小化 helper。
 
-> 版本：`1.0.0`
+> 版本：`1.0.1`
 >
 > 插件 ID：`io.omarchy.hosts`
 >
@@ -24,6 +24,17 @@ Omarchy Hosts 不是独立的 GTK、Electron 或 Web 应用，而是直接实现
 - root-owned 备份、漂移检测与单步事务 Undo；
 - 对 `/etc/hosts` 执行 compare-and-swap 检查，防止并发写入被覆盖；
 - 提供 CLI 与 Omarchy shell IPC，便于自动化和诊断。
+
+## 1.0.1 安全加固
+
+1.0.1 关闭了 Omarchy Marketplace 审阅中提出的可变路径与无界进程问题：
+
+- 用户状态的读取、写入、加锁、替换和清理均根植于已持有的 no-follow 目录描述符；
+- 特权 candidate 字节绑定到文件名中嵌入的 SHA-256，并由 root helper 再次校验；
+- root 事务状态只通过一次有界 `O_NOFOLLOW` 描述符读取；
+- QML service 执行输出上限、deadline、终止升级和组件销毁清理；
+- CLI 在独立进程会话中运行 `pkexec`，分别限制 stdout/stderr，并清理完整进程组；
+- root helper 具有独立的授权后硬 deadline。
 
 ## 设计目标
 
@@ -245,7 +256,7 @@ make sync-packaging
 
 ## 发布状态
 
-`v1.0.0` 是第一个公开版本，建立了原生插件 UI、校验与 planning engine、加固的 Apply/Undo helper、Arch 包、自动化测试和双语文档基线。
+`v1.0.1` 是当前安全加固版本；它保留 `v1.0.0` 的产品基线，并关闭 Omarchy Marketplace 审阅提出的描述符相对 I/O 与有界进程问题。
 
 发布详情以规范英文 [Changelog](CHANGELOG.md) 为准。
 

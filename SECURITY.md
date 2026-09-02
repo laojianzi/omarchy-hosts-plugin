@@ -97,3 +97,19 @@ cd "$HOME/.config/omarchy/plugins/io.omarchy.hosts"
 ```
 
 Review changes to `system/`, `packaging/arch/`, the planning engine, and Polkit policy with particular care. Never install helper files copied from an untrusted or locally modified checkout without reviewing the diff and package checksums.
+
+## I/O and process-boundary hardening
+
+### Descriptor-relative user state
+
+Version 1.0.1 opens the user configuration chain one component at a time with `O_DIRECTORY | O_NOFOLLOW`, validates each managed directory through its held descriptor, and keeps that descriptor open for the complete lock/read/write transaction. The state lock, state read, private temporary creation, atomic replacement, mode changes, and directory synchronization are performed relative to held descriptors. Replacing an ancestor pathname after validation cannot redirect an in-flight operation.
+
+### Candidate and root-state binding
+
+Privileged candidates are created below the caller's private runtime directory through held descriptors. The filename embeds the SHA-256 of the exact JSON bytes, and the root helper opens the complete `/run/user/$UID/omarchy-hosts/candidates` chain without following symlinks before checking owner, mode, link count, size, and content digest. Root transaction state is likewise read once through a bounded `O_NOFOLLOW` descriptor rather than through a check-then-reopen pathname sequence.
+
+### Bounded process lifetime
+
+The QML panel streams backend output under explicit ceilings and applies a deadline to every operation. Timeout, overflow, panel destruction, and failed startup trigger termination and escalation. The CLI launches `pkexec` in a separate process session, drains stdout and stderr concurrently under independent byte limits, tears down the process group on failure, and handles termination signals so candidate cleanup still runs. The root helper also has an independent hard watchdog after authorization.
+
+These controls limit accidental or adversarial denial of service from stuck processes and malformed output. They do not turn the unsandboxed user plugin into a security boundary against its own Unix account; a process already acting as that user can still deny service or replace user-owned plugin code.

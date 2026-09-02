@@ -9,6 +9,7 @@ imports only the root-owned engine.py installed beside this file.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import ctypes
 from datetime import datetime, timedelta, timezone
 import errno
@@ -19,6 +20,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import signal
 import stat
 import sys
 from typing import Any, Mapping
@@ -102,6 +104,7 @@ MAX_FUTURE_SKEW = timedelta(minutes=5)
 MAX_BACKUPS = 20
 BACKUP_RE = re.compile(r"^hosts-\d{8}T\d{6}\.\d{6}Z-[0-9a-f]{12}$")
 RENAME_EXCHANGE = 2
+PRIVILEGED_DEADLINE_SECONDS = 90
 
 
 def _rename_exchange(source_dir_fd: int, source: str, destination_dir_fd: int, destination: str) -> None:
@@ -251,55 +254,167 @@ def _read_fd_all(fd: int, maximum: int) -> bytes:
     return b"".join(chunks)
 
 
+_HELPER_DIRECTORY_FLAGS = (
+    os.O_RDONLY
+    | os.O_DIRECTORY
+    | os.O_CLOEXEC
+    | getattr(os, "O_NOFOLLOW", 0)
+)
+_CANDIDATE_NAME_RE = re.compile(
+    r"^request-([0-9a-f]{64})-([0-9a-f]{32})[.]json$"
+)
+
+
+def _open_directory_component(parent_fd: int, name: str) -> int:
+    if not name or name in {".", ".."} or "/" in name or "\x00" in name:
+        raise PrivilegedError(
+            "candidate_path",
+            "Unsafe candidate directory component",
+        )
+    return os.open(name, _HELPER_DIRECTORY_FLAGS, dir_fd=parent_fd)
+
+
+def _validate_candidate_directory(
+    fd: int,
+    owner_uid: int,
+    *,
+    forbidden_mode_bits: int,
+) -> None:
+    info = os.fstat(fd)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != owner_uid:
+        raise PrivilegedError(
+            "candidate_path",
+            "Candidate directory ownership or type is unsafe",
+        )
+    if stat.S_IMODE(info.st_mode) & forbidden_mode_bits:
+        raise PrivilegedError(
+            "candidate_permissions",
+            "Candidate directory permissions are unsafe",
+        )
+
+
+def _open_candidate_directory(caller_uid: int) -> int:
+    """Open and validate the complete candidate path without symlink traversal."""
+
+    descriptors: list[int] = []
+    current = os.open("/", _HELPER_DIRECTORY_FLAGS)
+    descriptors.append(current)
+    try:
+        for component in ("run", "user"):
+            current = _open_directory_component(current, component)
+            descriptors.append(current)
+            _validate_candidate_directory(
+                current,
+                0,
+                forbidden_mode_bits=0o022,
+            )
+
+        current = _open_directory_component(current, str(caller_uid))
+        descriptors.append(current)
+        _validate_candidate_directory(
+            current,
+            caller_uid,
+            forbidden_mode_bits=0o077,
+        )
+
+        for component in ("omarchy-hosts", "candidates"):
+            current = _open_directory_component(current, component)
+            descriptors.append(current)
+            _validate_candidate_directory(
+                current,
+                caller_uid,
+                forbidden_mode_bits=0o077,
+            )
+
+        return descriptors.pop()
+    except PrivilegedError:
+        raise
+    except OSError as exc:
+        raise PrivilegedError(
+            "candidate_path",
+            f"Cannot open candidate directory: {exc}",
+        ) from exc
+    finally:
+        for fd in reversed(descriptors):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
 def read_candidate(path_text: str, caller_uid: int) -> dict[str, Any]:
     supplied = Path(path_text)
-    if not supplied.is_absolute():
-        raise PrivilegedError("candidate_path", "Candidate path must be absolute")
-    runtime = Path(f"/run/user/{caller_uid}")
-    allowed = runtime / "omarchy-hosts" / "candidates"
-    try:
-        runtime_real = runtime.resolve(strict=True)
-        allowed_real = allowed.resolve(strict=True)
-        supplied_parent_real = supplied.parent.resolve(strict=True)
-    except OSError as exc:
-        raise PrivilegedError("candidate_path", f"Cannot resolve candidate path: {exc}") from exc
-    if runtime_real != runtime or supplied_parent_real != allowed_real:
+    allowed = Path(f"/run/user/{caller_uid}/omarchy-hosts/candidates")
+    if not supplied.is_absolute() or supplied.parent != allowed:
         raise PrivilegedError(
             "candidate_path",
             "Candidate must be a direct child of the caller's Omarchy Hosts runtime directory",
             {"allowedDirectory": str(allowed)},
         )
-    for directory in (runtime, runtime / "omarchy-hosts", allowed):
-        info = directory.lstat()
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or info.st_uid != caller_uid:
-            raise PrivilegedError("candidate_path", f"Unsafe candidate directory: {directory}")
-        if directory != runtime and stat.S_IMODE(info.st_mode) & 0o077:
-            raise PrivilegedError("candidate_permissions", f"Candidate directory must be mode 0700: {directory}")
 
-    flags = os.O_RDONLY | os.O_CLOEXEC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+    name_match = _CANDIDATE_NAME_RE.fullmatch(supplied.name)
+    if name_match is None:
+        raise PrivilegedError(
+            "candidate_path",
+            "Candidate filename is not recognized",
+        )
+    expected_sha256 = name_match.group(1)
+
+    directory_fd = _open_candidate_directory(caller_uid)
+    flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
     try:
-        fd = os.open(supplied, flags)
-    except OSError as exc:
-        raise PrivilegedError("candidate_open", f"Cannot open candidate: {exc}") from exc
-    try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != caller_uid or info.st_nlink != 1:
-            raise PrivilegedError("candidate_unsafe", "Candidate must be a single-link regular file owned by the caller")
-        if stat.S_IMODE(info.st_mode) & 0o077:
-            raise PrivilegedError("candidate_permissions", "Candidate must not be accessible by group or other users")
-        if info.st_size > MAX_CANDIDATE_BYTES:
-            raise PrivilegedError("candidate_too_large", "Candidate exceeds the safety size limit")
-        encoded = _read_fd_all(fd, MAX_CANDIDATE_BYTES)
+        try:
+            fd = os.open(supplied.name, flags, dir_fd=directory_fd)
+        except OSError as exc:
+            raise PrivilegedError(
+                "candidate_open",
+                f"Cannot open candidate: {exc}",
+            ) from exc
+        try:
+            info = os.fstat(fd)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != caller_uid
+                or info.st_nlink != 1
+            ):
+                raise PrivilegedError(
+                    "candidate_unsafe",
+                    "Candidate must be a single-link regular file owned by the caller",
+                )
+            if stat.S_IMODE(info.st_mode) & 0o077:
+                raise PrivilegedError(
+                    "candidate_permissions",
+                    "Candidate must not be accessible by group or other users",
+                )
+            if info.st_size > MAX_CANDIDATE_BYTES:
+                raise PrivilegedError(
+                    "candidate_too_large",
+                    "Candidate exceeds the safety size limit",
+                )
+            encoded = _read_fd_all(fd, MAX_CANDIDATE_BYTES)
+        finally:
+            os.close(fd)
     finally:
-        os.close(fd)
+        os.close(directory_fd)
+
+    actual_sha256 = sha256_bytes(encoded)
+    if actual_sha256 != expected_sha256:
+        raise PrivilegedError(
+            "candidate_changed",
+            "Candidate changed after it was staged; refresh the preview and try again",
+            {
+                "expectedSha256": expected_sha256,
+                "actualSha256": actual_sha256,
+            },
+        )
     try:
         payload = json.loads(encoded.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError) as exc:
-        raise PrivilegedError("candidate_invalid", f"Candidate is not valid UTF-8 JSON: {exc}") from exc
+        raise PrivilegedError(
+            "candidate_invalid",
+            f"Candidate is not valid UTF-8 JSON: {exc}",
+        ) from exc
     return _validate_candidate_payload(payload, caller_uid)
-
 
 def read_regular(
     path: Path,
@@ -765,6 +880,25 @@ def undo(caller_uid: int, expected_after_sha256: str | None = None) -> dict[str,
         os.close(lock_fd)
 
 
+def _privileged_deadline(_signum: int, _frame: Any) -> None:
+    raise PrivilegedError(
+        "helper_timeout",
+        "Privileged transaction exceeded its hard deadline and was aborted",
+    )
+
+
+@contextmanager
+def _privileged_watchdog() -> Any:
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    signal.signal(signal.SIGALRM, _privileged_deadline)
+    signal.setitimer(signal.ITIMER_REAL, PRIVILEGED_DEADLINE_SECONDS)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+
 def main(argv: list[str] | None = None) -> int:
     os.umask(0o077)
     args = list(sys.argv[1:] if argv is None else argv)
@@ -773,14 +907,24 @@ def main(argv: list[str] | None = None) -> int:
             raise PrivilegedError("not_root", "The helper must run as root through pkexec")
         caller_uid = caller_uid_from_environment()
         if not args:
-            raise PrivilegedError("usage", "Expected 'apply CANDIDATE' or 'undo [EXPECTED_AFTER_SHA256]'")
+            raise PrivilegedError(
+                "usage",
+                "Expected 'apply CANDIDATE' or 'undo [EXPECTED_AFTER_SHA256]'",
+            )
         command = args[0]
-        if command == "apply" and len(args) == 2:
-            data = apply(args[1], caller_uid)
-        elif command == "undo" and len(args) in {1, 2}:
-            data = undo(caller_uid, args[1] if len(args) == 2 else None)
-        else:
-            raise PrivilegedError("usage", "Expected 'apply CANDIDATE' or 'undo [EXPECTED_AFTER_SHA256]'")
+        with _privileged_watchdog():
+            if command == "apply" and len(args) == 2:
+                data = apply(args[1], caller_uid)
+            elif command == "undo" and len(args) in {1, 2}:
+                data = undo(
+                    caller_uid,
+                    args[1] if len(args) == 2 else None,
+                )
+            else:
+                raise PrivilegedError(
+                    "usage",
+                    "Expected 'apply CANDIDATE' or 'undo [EXPECTED_AFTER_SHA256]'",
+                )
         _emit(True, data)
         return 0
     except HostsError as exc:

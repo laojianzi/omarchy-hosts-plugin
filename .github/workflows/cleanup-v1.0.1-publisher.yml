@@ -1,0 +1,37 @@
+name: Clean v1.0.1 publisher
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/cleanup-v1.0.1-publisher.yml
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Remove one-time release workflows after successful publication
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view v1.0.1 --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease \
+            --jq 'select(.isDraft == false and .isPrerelease == false) | true' \
+            | grep -qx true
+          git rm -f \
+            .github/workflows/publish-v1.0.1.yml \
+            .github/workflows/cleanup-v1.0.1-publisher.yml
+          git config user.name "Jeff Li"
+          git config user.email "laojianzi1994@gmail.com"
+          git commit -m "chore: remove one-time v1.0.1 release workflows"
+          git push origin HEAD:main

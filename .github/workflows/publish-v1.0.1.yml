@@ -1,0 +1,53 @@
+name: Publish v1.0.1
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/publish-v1.0.1.yml
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate, tag, and release exact merged commit
+        shell: bash
+        env:
+          RELEASE_TAG: v1.0.1
+          RELEASE_SHA: ${{ github.event.before }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git checkout --detach "$RELEASE_SHA"
+          test "$(git show "$RELEASE_SHA:manifest.json" | python -c 'import json,sys; print(json.load(sys.stdin)["version"])')" = "1.0.1"
+          python scripts/check-docs.py
+          python scripts/check-version.py --tag "$RELEASE_TAG"
+          ./scripts/check.sh
+          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Tag $RELEASE_TAG already exists" >&2
+            exit 1
+          fi
+          git config user.name "Jeff Li"
+          git config user.email "laojianzi1994@gmail.com"
+          git tag -a "$RELEASE_TAG" "$RELEASE_SHA" -m "Omarchy Hosts $RELEASE_TAG"
+          git push origin "refs/tags/$RELEASE_TAG"
+          python scripts/release-notes.py --tag "$RELEASE_TAG" > /tmp/release-notes.md
+          gh release create "$RELEASE_TAG" \
+            --verify-tag \
+            --title "Omarchy Hosts $RELEASE_TAG" \
+            --notes-file /tmp/release-notes.md \
+            --latest

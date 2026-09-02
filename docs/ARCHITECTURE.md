@@ -298,3 +298,17 @@ The privileged trust base is intentionally limited to the packaged helper, packa
 - [Security policy](../SECURITY.md)
 - [Contributing](../CONTRIBUTING.md)
 - [Changelog](../CHANGELOG.md)
+
+## Descriptor and process-lifetime model
+
+### State transaction descriptors
+
+`StateStore` obtains descriptors for the configured home, `omarchy`, and `hosts` directories without following symlinks. It validates the managed directories and locks both the held state-directory inode and a compatibility lock file opened relative to it. Reads open `state.json` once through that directory descriptor with size, type, owner, link-count, and mode checks. Writes create a mode-0600 unpredictable child, synchronize it, replace `state.json` with `renameat`-style directory-relative arguments, and synchronize the directory before releasing the lock.
+
+### Candidate authorization handoff
+
+The CLI creates a candidate through a held `/run/user/$UID/omarchy-hosts/candidates` descriptor and names it `request-<content-sha256>-<nonce>.json`. The pathname is only a rendezvous value for Polkit. The privileged helper independently opens and validates every directory component, opens the basename with `O_NOFOLLOW`, bounds the read, and compares the actual bytes with the digest in the basename before parsing. A replacement containing different requested state therefore fails even if it occurs while the authorization dialog is open.
+
+### Process and output ownership
+
+The QML service owns the outer user-visible deadline and output ceilings. It receives streamed records, terminates the CLI on deadline or overflow, escalates if needed, and performs teardown when the component is destroyed. The CLI owns the nested `pkexec` process session: it concurrently drains both pipes, imposes tighter protocol limits, and terminates the session on timeout, overflow, or a signal from QML. The privileged helper owns the final post-authentication deadline through an in-process watchdog. Each layer therefore cleans up the processes and resources it created.

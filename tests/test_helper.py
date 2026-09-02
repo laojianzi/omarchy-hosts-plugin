@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import hashlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -76,6 +79,116 @@ class CandidateValidationTests(unittest.TestCase):
         with self.assertRaises(helper.PrivilegedError) as raised:
             helper._validate_candidate_payload(payload, 1000)
         self.assertEqual(raised.exception.code, "candidate_hash")
+
+
+class CandidateFileTests(unittest.TestCase):
+    def _payload_bytes(self, uid: int) -> bytes:
+        profiles = [enabled_profile()]
+        payload = {
+            "schemaVersion": 1,
+            "requestUid": uid,
+            "createdAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "baseSha256": "a" * 64,
+            "configSha256": profiles_config_sha256(profiles),
+            "profiles": profiles,
+        }
+        return (
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            + "\n"
+        ).encode("utf-8")
+
+    def test_candidate_filename_binds_exact_bytes(self) -> None:
+        uid = os.getuid()
+        encoded = self._payload_bytes(uid)
+        digest = hashlib.sha256(encoded).hexdigest()
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            name = f"request-{digest}-{'1' * 32}.json"
+            candidate = directory / name
+            candidate.write_bytes(encoded)
+            candidate.chmod(0o600)
+            directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                with mock.patch.object(
+                    helper,
+                    "_open_candidate_directory",
+                    side_effect=lambda _uid: os.dup(directory_fd),
+                ):
+                    result = helper.read_candidate(
+                        f"/run/user/{uid}/omarchy-hosts/candidates/{name}",
+                        uid,
+                    )
+            finally:
+                os.close(directory_fd)
+        self.assertEqual(result["requestUid"], uid)
+        self.assertEqual(result["profiles"][0]["id"], "development")
+
+    def test_candidate_content_substitution_is_rejected(self) -> None:
+        uid = os.getuid()
+        original = self._payload_bytes(uid)
+        digest = hashlib.sha256(original).hexdigest()
+        tampered = original.replace(b"app.test", b"api.test")
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            name = f"request-{digest}-{'2' * 32}.json"
+            candidate = directory / name
+            candidate.write_bytes(tampered)
+            candidate.chmod(0o600)
+            directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                with mock.patch.object(
+                    helper,
+                    "_open_candidate_directory",
+                    side_effect=lambda _uid: os.dup(directory_fd),
+                ):
+                    with self.assertRaises(helper.PrivilegedError) as raised:
+                        helper.read_candidate(
+                            f"/run/user/{uid}/omarchy-hosts/candidates/{name}",
+                            uid,
+                        )
+            finally:
+                os.close(directory_fd)
+        self.assertEqual(raised.exception.code, "candidate_changed")
+
+    def test_candidate_hardlink_is_rejected(self) -> None:
+        uid = os.getuid()
+        encoded = self._payload_bytes(uid)
+        digest = hashlib.sha256(encoded).hexdigest()
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            name = f"request-{digest}-{'3' * 32}.json"
+            candidate = directory / name
+            candidate.write_bytes(encoded)
+            candidate.chmod(0o600)
+            os.link(candidate, directory / "second-link.json")
+            directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                with mock.patch.object(
+                    helper,
+                    "_open_candidate_directory",
+                    side_effect=lambda _uid: os.dup(directory_fd),
+                ):
+                    with self.assertRaises(helper.PrivilegedError) as raised:
+                        helper.read_candidate(
+                            f"/run/user/{uid}/omarchy-hosts/candidates/{name}",
+                            uid,
+                        )
+            finally:
+                os.close(directory_fd)
+        self.assertEqual(raised.exception.code, "candidate_unsafe")
+
+
+class WatchdogTests(unittest.TestCase):
+    def test_hard_deadline_aborts_stuck_helper(self) -> None:
+        def blocked(_argv: list[str] | None = None) -> int:
+            time.sleep(5)
+            return 0
+
+        with mock.patch.object(helper, "PRIVILEGED_DEADLINE_SECONDS", 0.05):
+            with self.assertRaises(helper.PrivilegedError) as raised:
+                with helper._privileged_watchdog():
+                    blocked([])
+        self.assertEqual(raised.exception.code, "helper_timeout")
 
 
 class AtomicReplaceTests(unittest.TestCase):

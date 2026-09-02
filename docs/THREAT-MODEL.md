@@ -331,3 +331,17 @@ Follow the private reporting instructions in [SECURITY.md](../SECURITY.md). Do n
 - [README](../README.md)
 - [Contributing](../CONTRIBUTING.md)
 - [Changelog](../CHANGELOG.md)
+
+## Mutable-path and unbounded-process review
+
+### Threats
+
+An untrusted same-user process may rename a checked directory, replace a checked filename, or substitute a candidate while an administrator authorization prompt is open. A malformed or stuck backend may also produce unlimited output, retain a QML operation forever, or leave descendants running after its immediate parent exits.
+
+### Controls
+
+All user-state and candidate operations are rooted in held no-follow directory descriptors; child opens, private creation, replacement, cleanup, chmod, locking, and fsync are descriptor-relative. Candidate content is additionally bound to its filename digest and verified again by the privileged helper. Root state uses one bounded descriptor read. QML, CLI, and helper layers each enforce explicit output or time limits, and the CLI owns a separately created process session so descendants can be terminated together.
+
+### Residual risk
+
+A process with the same Unix identity can read or alter user-owned profiles and plugin source, race for availability, and prevent the desktop feature from functioning. That identity is already inside the Omarchy plugin trust boundary. The controls prevent pathname redirection into unrelated objects, prevent changed candidate bytes from crossing the privilege boundary, and bound resource consumption by the expected implementation; they do not attempt to sandbox mutually distrusting processes under one user account.

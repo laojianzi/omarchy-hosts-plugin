@@ -331,3 +331,17 @@ package、configuration manager、editor、VPN client、container tool 或管理
 - [README](../README.md)
 - [Contributing](../CONTRIBUTING.md)
 - [Changelog](../CHANGELOG.md)
+
+## 可变路径与无界进程审阅
+
+### 威胁
+
+不受信任的同用户进程可能重命名已经检查过的目录、替换已经检查过的文件名，或在管理员授权提示打开期间替换 candidate。畸形或卡死的后端也可能产生无限输出、让 QML 操作永久占用，或者在直接父进程退出后留下后代进程。
+
+### 控制
+
+所有用户状态与 candidate 操作都根植于已持有的 no-follow 目录描述符；子项打开、私有创建、替换、清理、chmod、加锁和 fsync 均相对于描述符执行。candidate 内容还会绑定到文件名摘要，并由特权 helper 再次校验。root state 使用一次有界描述符读取。QML、CLI 和 helper 各层分别执行明确的输出或时间上限；CLI 创建独立进程会话，使后代进程可以整体终止。
+
+### 剩余风险
+
+具有同一 Unix identity 的进程可以读取或修改用户拥有的 profile 与插件源码、竞争可用性并阻止桌面功能工作。该 identity 本来就位于 Omarchy 插件信任边界内。这些控制用于阻止路径重定向到无关对象、阻止被修改的 candidate 字节跨越特权边界，并限制预期实现的资源占用；它们不会尝试在同一用户账号下沙箱隔离彼此不信任的进程。

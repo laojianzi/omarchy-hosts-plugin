@@ -1,10 +1,10 @@
-# Maintainer: Omarchy Hosts contributors
+# Maintainer: Jeff Li <laojianzi1994@gmail.com>
 pkgname=omarchy-hosts-helper
-pkgver=1.0.0
+pkgver=1.0.1
 pkgrel=1
 pkgdesc='Root-owned transactional /etc/hosts writer for the Omarchy Hosts plugin'
 arch=('any')
-url='https://omarchy.org/'
+url='https://github.com/laojianzi/omarchy-hosts-plugin'
 license=('MIT')
 depends=('python>=3.11' 'polkit')
 source=(
@@ -16,7 +16,7 @@ source=(
 )
 sha256sums=(
   '375fe36b583806af0304c1f789a471238dd9000c7fdeea7b7973b36946f0ba06'
-  '244b87d2824751aeb3be139d1f3397eb3b8ed530c1f2d089ae4942c9f1dcb6d3'
+  '8f2371cd8e9cfb53abc05187566ffe98f5fd3ba6d8749dbd7aed78fee8c44dd8'
   '3164ee138fe7611c227e20caf5beb877de1c2ae93a1a30be6f81d013122fd8d6'
   '79a44f65b8e64b8f8f3a171890b7245a012a9d6c1321b662cdf54da3b02c76af'
   '9bc2e776fc12d4ff5ba006a5f0ed3225920407e38f208605bca86628b2f8f5a2'

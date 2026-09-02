@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "id": "io.omarchy.hosts",
   "name": "Omarchy Hosts",
-  "version": "1.0.0",
-  "author": "Omarchy Hosts contributors",
+  "version": "1.0.1",
+  "author": "Jeff Li",
   "license": "MIT",
   "description": "Native, keyboard-first hosts profile management with reviewed diffs, atomic writes, conflict detection, backups, and Polkit authorization.",
   "kinds": [

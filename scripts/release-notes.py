@@ -50,7 +50,7 @@ def main() -> int:
 
     print(f"# Omarchy Hosts {tag}")
     print()
-    print("The first production release of the native, keyboard-first hosts profile manager for Omarchy 4.")
+    print("A production release of the native, keyboard-first hosts profile manager for Omarchy 4.")
     print()
     print(body)
     print()

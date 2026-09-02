@@ -97,3 +97,19 @@ cd "$HOME/.config/omarchy/plugins/io.omarchy.hosts"
 ```
 
 请特别审阅 `system/`、`packaging/arch/`、planning engine 和 Polkit policy 的变更。不要在未审阅 diff 与包 checksum 的情况下，从不可信或本地已修改的 checkout 安装 helper 文件。
+
+## I/O 与进程边界加固
+
+### 基于描述符的用户状态
+
+从 1.0.1 起，用户配置目录链会逐级使用 `O_DIRECTORY | O_NOFOLLOW` 打开，通过已持有描述符校验每个受管理目录，并在完整的加锁、读取与写入事务期间保持该描述符。状态锁、状态读取、私有临时文件创建、原子替换、权限调整和目录同步全部相对于已持有描述符执行。即使校验后祖先路径名被替换，也不能重定向正在进行的操作。
+
+### Candidate 与 root state 绑定
+
+特权 candidate 通过已持有描述符创建在调用者的私有 runtime 目录中。文件名嵌入精确 JSON 字节的 SHA-256；root helper 在不跟随符号链接的前提下打开完整的 `/run/user/$UID/omarchy-hosts/candidates` 目录链，然后校验 owner、mode、link count、大小和内容摘要。root 事务状态同样通过一次有界 `O_NOFOLLOW` 描述符读取，而不是先检查再按路径重新打开。
+
+### 有界进程生命周期
+
+QML 面板在明确上限内流式读取后端输出，并为每项操作设置 deadline。超时、输出溢出、面板销毁和启动失败都会触发终止与升级强杀。CLI 在独立进程会话中启动 `pkexec`，分别在字节上限内并发排空 stdout/stderr，失败时清理整个进程组，并处理终止信号以保证 candidate cleanup 仍能执行。授权完成后，root helper 还有独立的硬 watchdog。
+
+这些控制用于限制卡死进程和畸形输出导致的意外或恶意拒绝服务。它们不会把未沙箱化的用户插件变成针对其自身 Unix 账号的安全边界；已经以该用户身份运行的进程仍可造成拒绝服务或替换用户拥有的插件代码。

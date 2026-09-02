@@ -184,8 +184,8 @@ Pull request 应说明：
 4. 创建并推送 annotated tag，例如：
 
    ```bash
-   git tag -a v1.0.0 -m "Omarchy Hosts v1.0.0"
-   git push origin v1.0.0
+   git tag -a vX.Y.Z -m "Omarchy Hosts vX.Y.Z"
+   git push origin vX.Y.Z
    ```
 
 5. 永久 release workflow 会校验 tag 与版本关系，并从规范英文 changelog 创建 GitHub Release。中文发布摘要应链接到 `CHANGELOG.zh-CN.md`，而不是替换规范 release notes；

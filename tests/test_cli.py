@@ -28,7 +28,7 @@ class CliSmokeTests(unittest.TestCase):
     def test_version(self) -> None:
         result = self.run_cli("--version")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "omarchy-hosts 1.0.0")
+        self.assertEqual(result.stdout.strip(), "omarchy-hosts 1.0.1")
 
     def test_json_profile_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
